@@ -2,10 +2,16 @@
 
 import argparse
 import os
+import re
 import shutil
 import stat
 import subprocess
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
+
+
+DEFAULT_HOOK_FILES = ["commit-msg", "pre-push"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -15,7 +21,7 @@ def parse_args() -> argparse.Namespace:
         choices=["github", "shared", "local"],
         default="github",
         help=(
-            "github = sync hooks from remote into target repo .git cache, "
+            "github = download hooks from GitHub into target repo .git cache, "
             "shared = point to an existing repo-hygiene-hooks checkout, "
             "local = copy hooks into target repo"
         ),
@@ -38,12 +44,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--github-repo",
         default="https://github.com/marvinkassabian/repo-hygiene-hooks.git",
-        help="GitHub repo URL used in github mode",
+        help="GitHub repository URL used in github mode",
     )
     parser.add_argument(
         "--github-ref",
         default="main",
-        help="Git ref used in github mode (branch, tag, or commit)",
+        help="GitHub ref used in github mode (branch, tag, or commit)",
+    )
+    parser.add_argument(
+        "--hook-files",
+        nargs="+",
+        default=DEFAULT_HOOK_FILES,
+        help="Hook filenames to download from .githooks (default: commit-msg pre-push)",
     )
     return parser.parse_args()
 
@@ -102,37 +114,44 @@ def copy_hooks(shared_dir: Path, destination_dir: Path) -> None:
         target.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def ensure_github_cache(target_repo: Path, repo_url: str, ref: str) -> Path:
-    cache_root = git_path(target_repo, "hook-sources/repo-hygiene-hooks")
+def parse_github_owner_repo(repo_url: str) -> tuple[str, str]:
+    match = re.search(r"github\.com[:/](?P<owner>[^/]+)/(?P<repo>[^/.]+)(?:\.git)?/?$", repo_url)
+    if not match:
+        raise ValueError(f"Unsupported GitHub repo URL: {repo_url}")
+    return match.group("owner"), match.group("repo")
 
-    if not (cache_root / ".git").is_dir():
-        cache_root.parent.mkdir(parents=True, exist_ok=True)
-        clone_result = run(["git", "clone", repo_url, str(cache_root)])
-        if clone_result.returncode != 0:
-            raise RuntimeError(f"Failed to clone {repo_url} into {cache_root}")
 
-    set_url_result = run(["git", "-C", str(cache_root), "remote", "set-url", "origin", repo_url])
-    if set_url_result.returncode != 0:
-        raise RuntimeError(f"Failed to set origin URL for {cache_root}")
+def safe_ref_fragment(ref: str) -> str:
+    return re.sub(r"[^A-Za-z0-9._-]+", "-", ref)
 
-    fetch_result = run(["git", "-C", str(cache_root), "fetch", "--all", "--tags"])
-    if fetch_result.returncode != 0:
-        raise RuntimeError(f"Failed to fetch updates for {cache_root}")
 
-    checkout_result = run(["git", "-C", str(cache_root), "checkout", ref])
-    if checkout_result.returncode != 0:
-        raise RuntimeError(f"Failed to checkout ref {ref} in {cache_root}")
+def download_text(url: str) -> str:
+    try:
+        with urlopen(url) as response:
+            return response.read().decode("utf-8")
+    except HTTPError as exc:
+        raise FileNotFoundError(f"Failed to download {url} (HTTP {exc.code}). Ensure the remote ref contains .githooks files and has been pushed.") from exc
+    except URLError as exc:
+        raise RuntimeError(f"Network error while downloading {url}: {exc.reason}") from exc
 
-    pull_result = run(["git", "-C", str(cache_root), "pull", "--ff-only", "origin", ref])
-    if pull_result.returncode != 0:
-        # Non-branch refs (tag/SHA) do not need pull.
-        pass
 
-    hooks_dir = cache_root / ".githooks"
-    if not hooks_dir.is_dir():
-        raise FileNotFoundError(f"Missing .githooks in cached repo: {cache_root}. Push a commit containing .githooks to the remote, or use --mode shared temporarily.")
+def ensure_github_cache(target_repo: Path, repo_url: str, ref: str, hook_files: list[str]) -> Path:
+    owner, repo = parse_github_owner_repo(repo_url)
 
-    return hooks_dir
+    cache_dir = git_path(target_repo, f"hook-sources/{repo}/{safe_ref_fragment(ref)}/.githooks")
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    for hook_name in hook_files:
+        raw_url = f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/.githooks/{hook_name}"
+        content = download_text(raw_url)
+
+        hook_path = cache_dir / hook_name
+        hook_path.write_text(content, encoding="utf-8")
+
+        mode = hook_path.stat().st_mode
+        hook_path.chmod(mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+    return cache_dir
 
 
 def main() -> int:
@@ -140,7 +159,12 @@ def main() -> int:
     target_repo = Path(args.target_repo).expanduser().resolve()
 
     if args.mode == "github":
-        hooks_dir = ensure_github_cache(target_repo=target_repo, repo_url=args.github_repo, ref=args.github_ref)
+        hooks_dir = ensure_github_cache(
+            target_repo=target_repo,
+            repo_url=args.github_repo,
+            ref=args.github_ref,
+            hook_files=args.hook_files,
+        )
         rel_path = os.path.relpath(hooks_dir, start=target_repo)
         return set_hooks_path(target_repo=target_repo, hooks_path_value=rel_path)
 

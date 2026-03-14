@@ -17,14 +17,19 @@ Backward-compatible alias during migration:
 
 - scripts/setup-git-hooks.py
 
-## Recommended usage (auto-fetch from GitHub)
+## Recommended usage (download from GitHub URL)
 
 From a target repository root:
 
 python3 /path/to/repo-hygiene-hooks/scripts/configure-git-hooks-path.py --mode github
 
-This clones or updates repo-hygiene-hooks inside the target repo .git cache and
-sets core.hooksPath to that cached .githooks directory using a repo-relative path.
+In github mode, the script downloads hook files from:
+
+- https://raw.githubusercontent.com/<owner>/<repo>/<ref>/.githooks/
+
+It stores them in the target repository .git cache and sets core.hooksPath to
+that cached location with a repo-relative path. The selected ref must already
+contain the .githooks files on GitHub.
 
 ## Other modes
 
