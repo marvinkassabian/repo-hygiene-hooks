@@ -84,7 +84,10 @@ def git_path(target_repo: Path, pathspec: str) -> Path:
     result = run(["git", "-C", str(target_repo), "rev-parse", "--git-path", pathspec], capture_output=True)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or f"Failed to resolve git path for {pathspec}")
-    return Path(result.stdout.strip()).resolve()
+    raw_path = Path(result.stdout.strip())
+    if not raw_path.is_absolute():
+        raw_path = (target_repo / raw_path)
+    return raw_path.resolve()
 
 
 def set_hooks_path(target_repo: Path, hooks_path_value: str) -> int:
