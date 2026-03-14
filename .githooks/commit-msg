@@ -1,0 +1,29 @@
+#!/usr/bin/env sh
+set -eu
+
+msg_file="$1"
+subject="$(sed -n '1p' "$msg_file")"
+
+# Conventional Commits:
+# <type>(<optional-scope>)<optional-!>: <subject>
+pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?(!)?: [a-z0-9].+'
+if printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+  exit 0
+fi
+
+cat >&2 <<'MSG'
+ERROR: Commit message does not follow Conventional Commits.
+
+Expected:
+  <type>(<optional-scope>)<optional-!>: <subject>
+
+Examples:
+  feat(manual): add section on frostbite prevention
+  fix(tex): correct broken hyperlink in contents
+  chore(repo): configure commit message hook
+
+Allowed types:
+  build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test
+MSG
+
+exit 1

@@ -1,0 +1,53 @@
+#!/usr/bin/env sh
+set -eu
+
+# Read push information from stdin
+# Format: <local ref> <local sha> <remote ref> <remote sha>
+while read -r local_ref local_sha remote_ref remote_sha; do
+  # Skip if deleting a branch
+  if [ "$local_sha" = "0000000000000000000000000000000000000000" ]; then
+    continue
+  fi
+
+  # Determine commit range to check
+  if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+    range="$local_sha"
+  else
+    range="$remote_sha..$local_sha"
+  fi
+
+  pattern='^(build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test)(\([a-z0-9._/-]+\))?(!)?: [a-z0-9].+'
+  failures=0
+
+  while IFS='|' read -r sha subject parents; do
+    [ -z "$sha" ] && continue
+
+    # Skip merge commits (multiple parents)
+    parent_count=$(printf '%s' "$parents" | wc -w)
+    if [ "$parent_count" -gt 1 ]; then
+      continue
+    fi
+
+    if ! printf '%s\n' "$subject" | grep -Eq "$pattern"; then
+      printf 'ERROR: Non-conventional commit cannot be pushed: %s\n  %s\n' "$sha" "$subject" >&2
+      failures=1
+    fi
+  done <<COMMITS
+$(git log --format='%H|%s|%P' "$range")
+COMMITS
+
+  if [ "$failures" -ne 0 ]; then
+    cat >&2 <<'MSG'
+
+Push blocked: One or more commits do not follow Conventional Commits format.
+
+Expected: <type>(<optional-scope>)<optional-!>: <subject>
+
+Allowed types:
+  build, chore, ci, docs, feat, fix, perf, refactor, revert, style, test
+MSG
+    exit 1
+  fi
+done
+
+exit 0
